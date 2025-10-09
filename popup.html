@@ -1,0 +1,120 @@
+!<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PhishGuard</title>
+  <style>
+    :root{--bg:#ffffff;--muted:#6b7280;--accent:#0f766e;--card:#f8fafc}
+    html,body{margin:0;padding:0;font-family:Inter, Roboto, Arial, sans-serif;background:var(--bg);color:#0f172a}
+    .container{width:320px;padding:14px}
+    .header{text-align:center}
+    h2{margin:6px 0 4px;font-size:18px}
+    .madeby{font-size:11px;color:var(--muted);margin-bottom:8px}
+    .status-row{display:flex;justify-content:space-between;align-items:center;margin:8px 0}
+    .small{font-size:13px;color:var(--muted)}
+    .score{font-weight:700;color:var(--accent)}
+    hr{border:none;border-top:1px solid #eef2f7;margin:10px 0}
+    .controls{display:flex;gap:8px;justify-content:center}
+    .btn{padding:8px 10px;border-radius:8px;border:1px solid #e6edf2;background:#fff;cursor:pointer;font-weight:600}
+    .btn.primary{background:linear-gradient(180deg,#0ea5a1,#0f766e);color:#fff;border:none}
+    .footer{text-align:center;font-size:12px;color:var(--muted);margin-top:10px}
+    a.link{color:var(--accent);text-decoration:none}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>PhishGuard — Advanced</h2>
+      <div class="madeby">Made by Team — Error420</div>
+    </div>
+
+    <div class="status-row">
+      <div class="small">Status: <span id="status">Ready</span></div>
+      <div class="score" id="score">—</div>
+    </div>
+
+    <hr />
+
+    <div style="text-align:center;">
+      <div class="controls">
+        <button id="scan-now" class="btn primary">Scan Open Email</button>
+        <button id="open-settings" class="btn">Settings</button>
+      </div>
+    </div>
+
+    <div style="margin-top:12px;font-size:13px;color:var(--muted);">
+      <div id="last-result">Last result: <span id="last-text">None</span></div>
+    </div>
+
+    <div class="footer">
+      <div style="margin-top:8px">Version 1.0 — <a id="learn" class="link" href="#">Help</a></div>
+    </div>
+  </div>
+
+  <script>
+    // Simple popup logic (no external popup.js required)
+    const statusEl = document.getElementById('status');
+    const scoreEl = document.getElementById('score');
+    const scanBtn = document.getElementById('scan-now');
+    const settingsBtn = document.getElementById('open-settings');
+    const lastText = document.getElementById('last-text');
+    const learn = document.getElementById('learn');
+
+    function setStatus(text){ statusEl.innerText = text; }
+    function setScore(s){ scoreEl.innerText = s; }
+    function setLast(t){ lastText.innerText = t; }
+
+    scanBtn.addEventListener('click', async ()=>{
+      setStatus('Scanning...');
+      setScore('—');
+      // Ask the active tab (Gmail) to run analysis if content script supports runtime messaging
+      try{
+        const [tab] = await chrome.tabs.query({active:true,currentWindow:true});
+        if(!tab) throw new Error('No active tab');
+        chrome.tabs.sendMessage(tab.id, {action:'phishguard_scan'}, function(response){
+          if(chrome.runtime.lastError){
+            setStatus('No response from page');
+            setLast('Make sure Gmail is open and PhishGuard content script is loaded.');
+            return;
+          }
+          if(response && response.score !== undefined){
+            setStatus(response.label || 'Analyzed');
+            setScore(response.score + '%');
+            setLast(response.reasons ? response.reasons.slice(0,2).join(' · ') : 'No major flags');
+          } else {
+            setStatus('No data');
+            setLast('Content script did not return analysis.');
+          }
+        });
+      }catch(err){
+        setStatus('Error');
+        setLast(err.message);
+      }
+    });
+
+    settingsBtn.addEventListener('click', ()=>{
+      // Prefer opening an options page if defined, else open extension's options.html in a new tab
+      if(chrome.runtime.openOptionsPage) {
+        chrome.runtime.openOptionsPage();
+      } else {
+        const url = chrome.runtime.getURL('options.html');
+        chrome.tabs.create({url});
+      }
+    });
+
+    learn.addEventListener('click', (e)=>{ e.preventDefault();
+      chrome.tabs.create({url: 'https://example.com/phishguard-help'});
+    });
+
+    // initialize display with stored state (if any)
+    chrome.storage.local.get(['phishguard_last'], (res)=>{
+      if(res && res.phishguard_last){
+        setLast(res.phishguard_last.text || '—');
+        setScore(res.phishguard_last.score !== undefined ? res.phishguard_last.score + '%' : '—');
+        setStatus(res.phishguard_last.label || 'Ready');
+      }
+    });
+  </script>
+</body>
+</html>
