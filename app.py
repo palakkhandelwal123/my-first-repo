@@ -1,130 +1,203 @@
+#!/usr/bin/env python3
+# email_phish_cli.py
+import imaplib
+import email
+from email.header import decode_header
+import getpass
 import re
-import streamlit as st
+import sys
 
-# ---- Page Config ----
-st.set_page_config(page_title="🛡️ PhishGuard - Simple Phishing Detector", layout="wide")
-
-# ---- Header ----
-st.markdown("""
-<div style='
-    text-align:center;
-    padding:20px;
-    border-radius:10px;
-    background: linear-gradient(90deg, #00FF00, #00FFFF);
-    color:#000000;
-    font-family:sans-serif;
-'>
-    <h1>🛡️ PhishGuard</h1>
-    <h4>Simple Phishing Email Detector</h4>
-    <h6>Team Members: Yuvraj Tyagi, Shivam, Palak Khandelwal, Palak Agrawal</h6>
-</div>
-""", unsafe_allow_html=True)
-
-st.markdown("---")
-
-# ---- Centered Input Section ----
-st.markdown("<h4 style='text-align:center; color:#00FF88;'>Enter Email Details</h4>", unsafe_allow_html=True)
-
-sender = st.text_input("📧 Sender Email (optional)")
-subject = st.text_input("✉️ Email Subject")
-body = st.text_area("📝 Email Body", height=200)
-analyze_btn = st.button("🔍 Analyze Email")
-
-# ---- Phishing Detection Function ----
+# ---------------- Phishing checker (simple heuristics) ----------------
 def check_phishing(subject, body, sender=""):
     text = (subject + " " + body).lower()
     score = 0
     reasons = []
 
-    # Suspicious words
     suspicious_words = ["urgent", "verify", "login", "password", "bank", "account", "update", "click", "confirm"]
     found_words = [w for w in suspicious_words if w in text]
     if found_words:
-        reasons.append(f"⚠️ Found suspicious words: {', '.join(found_words)}")
+        reasons.append(f"Found suspicious words: {', '.join(found_words)}")
         score += len(found_words) * 10
 
-    # URLs
     urls = re.findall(r"(https?://[^\s]+|[A-Za-z0-9.-]+\.[A-Za-z]{2,})", text)
     if urls:
-        reasons.append(f"🔗 Found links: {', '.join(urls[:3])}")
+        reasons.append(f"Found links: {', '.join(urls[:3])}")
         score += 20
         for u in urls:
             if any(ext in u for ext in [".xyz", ".top", ".io", "login", "secure", "verify"]):
-                reasons.append(f"🚨 Suspicious link: {u}")
+                reasons.append(f"Suspicious link: {u}")
                 score += 15
 
-    # Generic sender
     if sender and any(x in sender.lower() for x in ["no-reply", "support@", "noreply", "help@", "info@"]):
-        reasons.append(f"📩 Sender looks generic: {sender}")
+        reasons.append(f"Sender looks generic: {sender}")
         score += 5
 
     score = min(score, 100)
     return score, reasons
 
-# ---- Analyze Button Logic ----
-if analyze_btn:
-    if not subject and not body:
-        st.warning("Please enter email subject or body.")
-    else:
-        score, reasons = check_phishing(subject, body, sender)
-
-        # ---- Result Card ----
-        if score >= 70:
-            color = "#FF4B4B"
-            status = "⚠️ High Risk Phishing Email"
-            st.balloons()
-        elif score >= 40:
-            color = "#FFA500"
-            status = "⚠️ Potential Phishing Email"
+# ---------------- Helpers to decode headers and extract body ----------------
+def decode_mime_words(s):
+    if not s:
+        return ""
+    parts = decode_header(s)
+    decoded = ""
+    for part, enc in parts:
+        if isinstance(part, bytes):
+            try:
+                decoded += part.decode(enc or "utf-8", errors="ignore")
+            except:
+                decoded += part.decode("utf-8", errors="ignore")
         else:
-            color = "#32CD32"
-            status = "✅ Email looks Legitimate"
+            decoded += part
+    return decoded
 
-        st.markdown(f"""
-            <div style='
-                background-color:#1e1e1e;
-                padding:20px;
-                border-radius:10px;
-                border-left:10px solid {color};
-                text-align:center;
-                font-family:sans-serif;
-            '>
-                <h3 style='color:{color}'>{status} ({score}/100)</h3>
-            </div>
-        """, unsafe_allow_html=True)
+def get_body_from_msg(msg):
+    if msg.is_multipart():
+        # prefer text/plain
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            disp = str(part.get("Content-Disposition"))
+            if ctype == "text/plain" and "attachment" not in disp:
+                try:
+                    return part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", errors="ignore")
+                except:
+                    return part.get_payload(decode=True).decode("utf-8", errors="ignore")
+        # fallback to first text part
+        for part in msg.walk():
+            if part.get_content_type().startswith("text/"):
+                try:
+                    return part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", errors="ignore")
+                except:
+                    return part.get_payload(decode=True).decode("utf-8", errors="ignore")
+        return ""
+    else:
+        try:
+            return msg.get_payload(decode=True).decode(msg.get_content_charset() or "utf-8", errors="ignore")
+        except:
+            return msg.get_payload(decode=True).decode("utf-8", errors="ignore")
 
-        # ---- Gradient Progress Bar ----
-        st.markdown(f"""
-        <div style='
-            background-color:#333333;
-            border-radius:10px;
-            height:25px;
-            margin-top:10px;
-        '>
-            <div style='
-                width:{score}%;
-                background: linear-gradient(90deg, #00FF00, #00FFFF);
-                height:25px;
-                border-radius:10px;
-            '></div>
-        </div>
-        """, unsafe_allow_html=True)
+# ---------------- Fetch emails via IMAP ----------------
+def fetch_emails(host, username, password, folder="INBOX", limit=10, ssl=True):
+    mails = []
+    try:
+        if ssl:
+            M = imaplib.IMAP4_SSL(host)
+        else:
+            M = imaplib.IMAP4(host)
+        M.login(username, password)
+    except Exception as e:
+        print("Failed to connect/login:", e)
+        return mails
 
-        # ---- Reasons Section ----
-        with st.expander("🔍 Why this result?"):
-            if reasons:
-                for r in reasons:
-                    st.write(r)
-            else:
-                st.write("No suspicious elements found!")
+    try:
+        M.select(folder)
+        typ, data = M.search(None, "ALL")
+        if typ != "OK":
+            print("Failed to search mailbox:", typ)
+            return mails
+        id_list = data[0].split()
+        if not id_list:
+            return mails
+        # take last 'limit' ids
+        recent_ids = id_list[-limit:]
+        for eid in reversed(recent_ids):
+            typ, msg_data = M.fetch(eid, "(RFC822)")
+            if typ != "OK":
+                continue
+            raw = msg_data[0][1]
+            msg = email.message_from_bytes(raw)
+            subj = decode_mime_words(msg.get("Subject", ""))
+            frm = decode_mime_words(msg.get("From", ""))
+            date = msg.get("Date", "")
+            body = get_body_from_msg(msg) or ""
+            mails.append({
+                "id": eid.decode() if isinstance(eid, bytes) else str(eid),
+                "subject": subj,
+                "from": frm,
+                "date": date,
+                "body": body
+            })
+    finally:
+        try:
+            M.logout()
+        except:
+            pass
 
-# ---- Footer ----
-st.markdown("---")
-st.markdown("""
-<div style='text-align:center; color:#00FF00; margin-top:20px; font-family:sans-serif;'>
-    <strong>Made by Team - Error420</strong><br>
-    Team Members: Yuvraj Tyagi, Shivam, Palak Khandelwal, Palak Agrawal
-</div>
-""", unsafe_allow_html=True)
+    return mails
 
-st.info("🧠 Note: Beginner-friendly prototype. Future improvements: AI-based analysis, metadata checks, advanced phishing detection.")
+# ---------------- CLI UI ----------------
+def main():
+    print("=== Simple Email Phishing CLI ===")
+    host = input("IMAP Host (e.g. imap.gmail.com): ").strip() or "imap.gmail.com"
+    user = input("Email (username): ").strip()
+    if not user:
+        print("Email required. Exiting.")
+        return
+    pwd = getpass.getpass("Password or App Password (input hidden): ")
+
+    try:
+        limit = int(input("How many recent emails to fetch (default 10): ") or "10")
+    except:
+        limit = 10
+
+    print("\nConnecting... (this uses IMAP and keeps credentials locally on your machine)\n")
+    mails = fetch_emails(host, user, pwd, limit=limit)
+    if not mails:
+        print("No emails fetched (or failed). Check credentials / IMAP settings.")
+        return
+
+    # show list
+    print(f"\nFetched {len(mails)} emails:\n")
+    for i, m in enumerate(mails, 1):
+        subj = (m['subject'][:80] + "..") if len(m['subject'])>80 else m['subject']
+        frm = m['from']
+        date = m['date']
+        print(f"[{i}] {subj}\n     From: {frm}\n     Date: {date}\n")
+
+    while True:
+        choice = input("Enter email number to analyze (or 'q' to quit): ").strip().lower()
+        if choice in ("q", "quit", "exit"):
+            print("Goodbye.")
+            break
+        if not choice.isdigit():
+            print("Enter a valid number.")
+            continue
+        idx = int(choice) - 1
+        if idx < 0 or idx >= len(mails):
+            print("Number out of range.")
+            continue
+
+        sel = mails[idx]
+        subject = sel['subject']
+        sender = sel['from']
+        body = sel['body']
+        snippet = (body[:800] + "...") if len(body) > 800 else body
+
+        score, reasons = check_phishing(subject, body, sender)
+        print("\n--- Analysis Result ---")
+        print("Subject:", subject)
+        print("From:", sender)
+        print("Date:", sel['date'])
+        print("Score:", score, "/100")
+        if score >= 70:
+            print("=> HIGH RISK (Likely phishing)")
+        elif score >= 40:
+            print("=> POTENTIAL PHISHING")
+        else:
+            print("=> Likely Legitimate")
+        print("\nReasons:")
+        if reasons:
+            for r in reasons:
+                print(" -", r)
+        else:
+            print(" - No suspicious cues found.")
+        print("\nBody preview:\n")
+        print(snippet)
+        print("\n------------------------\n")
+
+if _name_ == "_main_":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrupted. Exiting.")
+        sys.exit(0)
