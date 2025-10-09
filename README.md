@@ -2,7 +2,7 @@
 git clone https://github.com/palakkhandelwal123/my-first-repo.git
 
 # Step 2: Navigate to folder
-cd <repo-name>
+cd my-first-repo
 
 # Step 3: Install dependencies
 pip install -r requirements.txt   # for Python
